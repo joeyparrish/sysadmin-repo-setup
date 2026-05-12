@@ -39,40 +39,116 @@ Then scaffold and populate.
 
 ```bash
 hostname
-uname -r
-lscpu
-free -h
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL
-cat /proc/mdstat 2>/dev/null          # md-RAID
-zpool list && zpool status 2>/dev/null # ZFS
-df -hT
-lspci | grep -iE 'vga|3d|display'
-nvidia-smi 2>/dev/null || true
-ip link show && ip addr show
-lspci | grep -i ethernet
-systemctl list-units --type=service --state=running
-docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null || true
-crontab -l 2>/dev/null; ls /etc/cron.* 2>/dev/null
-apcaccess status 2>/dev/null || true
-dmidecode -t memory | grep -E 'Size:|Type:|Speed:|Locator:' # RAM slots
-dmidecode -t baseboard | grep -E 'Manufacturer|Product|Version'
-smartctl --scan 2>/dev/null || true           # disk health overview
+uname -r                                          # kernel version
+lscpu                                             # CPU model, cores, threads, architecture
+free -h                                           # total RAM
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL  # disks, partitions, filesystems, mount points
+cat /proc/mdstat 2>/dev/null                      # md-RAID arrays (absent if no RAID)
+zpool list && zpool status 2>/dev/null            # ZFS pools and health
+df -hT                                            # filesystem usage with types
+lspci | grep -iE 'vga|3d|display'                # GPU(s)
+nvidia-smi 2>/dev/null || true                    # NVIDIA driver version and VRAM (if present)
+ip link show && ip addr show                      # all NICs, MAC addresses, IP assignments
+lspci | grep -i ethernet                          # NIC hardware models
+systemctl list-units --type=service --state=running  # running services
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null || true  # running containers
+crontab -l 2>/dev/null; ls /etc/cron.* 2>/dev/null  # user crontab and system cron jobs
+apcaccess status 2>/dev/null || true              # UPS status via apcupsd (if present)
+dmidecode -t memory | grep -E 'Size:|Type:|Speed:|Locator:'  # RAM slots: capacity, type, speed
+dmidecode -t baseboard | grep -E 'Manufacturer|Product|Version'  # motherboard make/model
+smartctl --scan 2>/dev/null || true               # disk health overview
 # then for each disk: smartctl -a /dev/sdX
 ```
 
 ### Debian / Ubuntu
 
 ```bash
-lsb_release -a
-cat /etc/apt/sources.list
-cat /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null
-apt-mark showmanual | sort          # explicitly installed packages
-grep ' install ' /var/log/dpkg.log | tail -50   # recent installs
+lsb_release -a                                                          # distro name, version, codename
+cat /etc/apt/sources.list                                               # base apt sources
+cat /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null  # additional repos and PPAs
+apt-mark showmanual | sort                                              # explicitly installed packages
+grep ' install ' /var/log/dpkg.log | tail -50                          # recent installs
 ```
 
 ### Windows
 
-<!-- TODO: add exploration commands -->
+Run these in PowerShell. Batch independent queries in parallel where possible.
+
+```powershell
+# Hostname, OS, CPU, RAM, Motherboard, BIOS
+$cs  = Get-WmiObject Win32_ComputerSystem
+$cpu = Get-WmiObject Win32_Processor
+$os  = Get-WmiObject Win32_OperatingSystem
+$bios = Get-WmiObject Win32_BIOS
+$mb  = Get-WmiObject Win32_BaseBoard
+
+$env:COMPUTERNAME
+$os.Caption; $os.Version; $os.BuildNumber; $os.OSArchitecture
+$cpu.Name; "Cores: $($cpu.NumberOfCores)  Threads: $($cpu.NumberOfLogicalProcessors)"; "Clock: $($cpu.MaxClockSpeed) MHz"
+[math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
+$mb.Manufacturer; $mb.Product; $mb.Version
+$bios.SMBIOSBIOSVersion; $bios.ReleaseDate
+
+# RAM slot detail (type, speed, per-slot capacity, manufacturer, part number)
+Get-WmiObject Win32_PhysicalMemory | ForEach-Object {
+    $gb = [math]::Round($_.Capacity / 1GB, 1)
+    "Slot: $($_.DeviceLocator)  $gb GB  Speed: $($_.Speed) MHz  Mfr: $($_.Manufacturer)  PN: $($_.PartNumber)"
+}
+
+# Disks, partitions, volumes, filesystems
+Get-PhysicalDisk | Select-Object FriendlyName, MediaType, Size, BusType, HealthStatus | Format-Table -AutoSize
+Get-Partition    | Select-Object DiskNumber, PartitionNumber, Size, Type, DriveLetter | Format-Table -AutoSize
+Get-Volume       | Select-Object DriveLetter, FileSystem, FileSystemLabel, Size, SizeRemaining, HealthStatus | Format-Table -AutoSize
+
+# GPUs
+Get-WmiObject Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion | Format-List
+
+# Network adapters and IPs
+Get-NetAdapter   | Select-Object Name, InterfaceDescription, Status, MacAddress, LinkSpeed | Format-Table -AutoSize
+Get-NetIPAddress | Where-Object { $_.AddressFamily -eq "IPv4" -and $_.IPAddress -ne "127.0.0.1" } |
+    Select-Object InterfaceAlias, IPAddress, PrefixLength | Format-Table -AutoSize
+
+# Non-Microsoft running services (filter to third-party paths)
+Get-Service | Where-Object { $_.Status -eq 'Running' } | ForEach-Object {
+    $wmi = Get-WmiObject Win32_Service -Filter "Name='$($_.Name)'" -ErrorAction SilentlyContinue
+    if ($wmi -and $wmi.PathName -and $wmi.PathName -notmatch 'system32|SysWOW64|Windows\\|winsxs') {
+        [PSCustomObject]@{ Name=$_.Name; DisplayName=$_.DisplayName; Path=$wmi.PathName }
+    }
+} | Format-Table -AutoSize
+
+# Non-Microsoft scheduled tasks
+Get-ScheduledTask | Where-Object {
+    $_.TaskPath -notmatch '\\Microsoft\\' -and $_.State -ne 'Disabled'
+} | Select-Object TaskName, TaskPath, State | Format-Table -AutoSize
+
+# Firewall profiles
+Get-NetFirewallProfile | Select-Object Name, Enabled, DefaultInboundAction, DefaultOutboundAction | Format-Table -AutoSize
+
+# Listening ports
+Get-NetTCPConnection -State Listen | Select-Object LocalAddress, LocalPort | Sort-Object LocalPort | Format-Table -AutoSize
+
+# Docker / WSL
+docker ps --format "table {{.Names}}`t{{.Image}}`t{{.Status}}" 2>$null
+wsl --list --verbose 2>$null
+
+# Installed applications (non-Microsoft, from registry)
+Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* |
+    Where-Object { $_.DisplayName } |
+    Select-Object DisplayName, DisplayVersion, Publisher |
+    Sort-Object DisplayName | Format-Table -AutoSize
+```
+
+**Windows-specific notes for docs:**
+
+- BIOS/UEFI: use `SMBIOSBIOSVersion` and `ReleaseDate` from `Win32_BIOS`
+- RAM type: `SMBIOSMemoryType 26` = DDR5, `24` = DDR4, `21` = DDR3
+- GPU VRAM: `AdapterRAM` from WMI is unreliable for dedicated VRAM above 4 GB;
+  use Device Manager or GPU vendor tools for accurate figures
+- Services: Windows OpenSSH server (`sshd`) config lives at
+  `C:\ProgramData\ssh\sshd_config`; TigerVNC stores its password in the registry
+- Firewall: note if any profile (Domain/Private/Public) is unexpectedly disabled
+- No direct equivalent of `apt-mark showmanual`; the registry uninstall key is
+  the closest approximation for explicitly installed apps
 
 ### macOS
 
